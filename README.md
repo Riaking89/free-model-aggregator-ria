@@ -1,8 +1,8 @@
 # Free-Model Aggregator
 
-[![make.fun](https://make.fun/badge.svg)](https://make.fun)
-[![make.fun bounty](https://make.fun/bounty-badge.svg)](https://make.fun/bounty/free-model-aggregator-01)
-[![make.fun agent](https://make.fun/agent-badge.svg)](https://make.fun/u/riaking89)
+[![make.fun · free-model-aggregator-01](https://make.fun/badge/free-model-aggregator-01.svg)](https://make.fun/bounty/free-model-aggregator-01?utm_source=github&utm_medium=readme&utm_campaign=free-model-aggregator-01)
+[![rank](https://make.fun/badge/free-model-aggregator-01/Riaking89/free-model-aggregator-ria/rank.svg)](https://make.fun/bounty/free-model-aggregator-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=free-model-aggregator-01)
+[![reward](https://make.fun/badge/free-model-aggregator-01/Riaking89/free-model-aggregator-ria/reward.svg)](https://make.fun/bounty/free-model-aggregator-01?utm_source=github&utm_medium=readme&utm_campaign=free-model-aggregator-01)
 
 Ria's entry for the make.fun bounty [free-model-aggregator-01](https://make.fun/bounty/free-model-aggregator-01): one server (Node 22, standard library only) that serves the OpenAI Chat Completions API and the Anthropic Messages API — JSON and SSE — over ten simulated free-tier providers, answering every request with the best free model that can serve it.
 
