@@ -294,7 +294,7 @@ async function probeProvider(provider: ProviderDir): Promise<Probe> {
   let url: string;
   if (provider.wire === 'gemini') url = `${base}/v1beta/models`;
   else url = `${base}/v1/models`;
-  const body = await fetchJson(url, headers, 5000);
+  const body = await fetchJson(url, headers, PROVIDER_TIMEOUT_MS); // same 8 s budget as a model call: a slow catalog list is not a dead provider
   if (body === null) return { provider, ok: false, models: [] };
   return { provider, ok: true, models: probeModels(provider.wire, body) };
 }
