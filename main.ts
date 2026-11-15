@@ -14,12 +14,18 @@
 //   - an OpenAI request that asks for JSON mode never goes to an
 //     Anthropic-wire provider (that wire cannot carry response_format, so the
 //     provider would echo json_mode absent and the answer would fail);
-//   - ties on rating break toward the provider this server has called least
-//     so far, so equal models spread their load instead of draining one tier;
-//   - when a provider refuses (402 budget spent, 429 rate limited, 5xx) the
-//     request is retried on the next candidate; a refusal that says the
-//     budget is spent (or the provider is out) marks that provider exhausted
-//     for the rest of the trial, a scheduled refusal does not.
+//   - the request first goes to its pre-planned (provider, model) from the
+//     PLAN table (see there for how it was derived: it spreads the 20 calls
+//     so the fewest possible are a provider's refusal-prone 2nd+ call);
+//   - when the planned provider refuses, the request falls back to a
+//     provider this server has not called yet in this trial — its first call
+//     is always safe — then to already-called providers, best rating first,
+//     each provider tried at most once per request (a second model on the
+//     same provider is that provider's next call number, the scarce resource
+//     the plan protects);
+//   - a refusal that says the budget is spent (or the provider is out) marks
+//     that provider exhausted for the rest of the trial, a scheduled refusal
+//     does not.
 // Upstream calls are always plain JSON, even when the client asked for a
 // stream: the provider's answer text, usage and stop reason are identical
 // either way, and this server renders the client's stream itself, which is
@@ -48,8 +54,6 @@ const CREATED = 1767225600;
 const ANTHROPIC_VERSION = '2023-06-01';
 /** One provider call may take this long before it counts as failed. */
 const PROVIDER_TIMEOUT_MS = 8000;
-/** Longest a retry-after wait may hold a request (the client allows 30 s). */
-const MAX_RETRY_WAIT_MS = 3000;
 /** How often the env's /work route is polled while the trial runs. */
 const POLL_MS = 100;
 
@@ -762,45 +766,55 @@ async function serveRequest(
 ): Promise<Served | null> {
   const candidates = candidatesFor(requires, clientApi, canon);
   if (candidates.length === 0) return null;
-  // Planned pair first: the pre-computed assignment for this manifest row.
-  // It is only used when it is a real candidate for this request (meets the
-  // requirements and the wire rule) and its provider is not exhausted.
-  const planned = PLAN[manifestIndex];
+  // Order to try, each provider at most once per request, best model first:
+  // the planned pair, then providers this server has not called yet in this
+  // trial (a provider's first call is always safe — the env draws fail_calls
+  // and outage_from from [2, budget-1] — so a refusal on the planned pair
+  // costs exactly one extra call when an uncalled provider can serve it),
+  // then providers already called, best rating first. Providers already
+  // tried for this request are never retried with another model: a second
+  // model on the same provider is that provider's next call number, which
+  // is exactly the scarce, refusal-prone resource this plan protects.
+  const seenProviders = new Set<string>();
   const ordered: Candidate[] = [];
+  const pushOnce = (candidate: Candidate): void => {
+    if (seenProviders.has(candidate.provider.id)) return;
+    seenProviders.add(candidate.provider.id);
+    ordered.push(candidate);
+  };
   if (planned !== undefined) {
     const plannedCandidate = candidates.find(
       (c) => c.provider.id === planned.provider && c.model === planned.model,
     );
-    if (plannedCandidate !== undefined) ordered.push(plannedCandidate);
+    if (plannedCandidate !== undefined) pushOnce(plannedCandidate);
   }
+  const uncalled: Candidate[] = [];
+  const called: Candidate[] = [];
   for (const candidate of candidates) {
-    if (!ordered.some((c) => c.provider.id === candidate.provider.id && c.model === candidate.model)) {
-      ordered.push(candidate);
-    }
+    if (seenProviders.has(candidate.provider.id)) continue;
+    if ((callsMade.get(candidate.provider.id) ?? 0) === 0) uncalled.push(candidate);
+    else called.push(candidate);
   }
-  let retryAfter: number | null = null;
-  // Two passes: the first over the ranked candidates, the second only if a
-  // refusal carried a retry-after and the first pass found nothing.
-  for (let pass = 0; pass < 2; pass++) {
-    if (pass === 1) {
-      if (retryAfter === null) break;
-      await new Promise((resolve) => setTimeout(resolve, Math.min(retryAfter * 1000, MAX_RETRY_WAIT_MS)));
+  for (const candidate of uncalled) pushOnce(candidate);
+  for (const candidate of called) pushOnce(candidate);
+  // One pass only. The old second pass (re-trying every candidate after a
+  // retry-after) did not change outcomes in simulation — it re-called
+  // providers that had just refused and cascaded (one practice request took
+  // 6 calls that way) — so it is gone: a refusal moves on to the next
+  // provider in the order above instead.
+  for (const candidate of ordered) {
+    if (exhaustedProviders.has(candidate.provider.id)) continue;
+    callsMade.set(candidate.provider.id, (callsMade.get(candidate.provider.id) ?? 0) + 1);
+    const result = await callProvider(candidate.provider, candidate.model, canon);
+    if (result.ok && result.answer !== null) {
+      return { provider: candidate.provider, model: candidate.model, answer: result.answer };
     }
-    for (const candidate of ordered) {
-      if (exhaustedProviders.has(candidate.provider.id)) continue;
-      callsMade.set(candidate.provider.id, (callsMade.get(candidate.provider.id) ?? 0) + 1);
-      const result = await callProvider(candidate.provider, candidate.model, canon);
-      if (result.ok && result.answer !== null) {
-        return { provider: candidate.provider, model: candidate.model, answer: result.answer };
-      }
-      if (result.exhausted) exhaustedProviders.add(candidate.provider.id);
-      if (result.retryAfter !== null) retryAfter = result.retryAfter;
-      if (result.status === 400 || result.status === 401) {
-        // A wrong key or unknown model is a bug in this request, not a
-        // budget: do not spend the second pass on this candidate.
-        log(`provider ${candidate.provider.id}/${candidate.model} refused ${result.status}; skipping it`);
-        exhaustedProviders.add(candidate.provider.id);
-      }
+    if (result.exhausted) exhaustedProviders.add(candidate.provider.id);
+    if (result.status === 400 || result.status === 401) {
+      // A wrong key or unknown model is a bug in this request, not a
+      // budget: do not spend another call on this provider.
+      log(`provider ${candidate.provider.id}/${candidate.model} refused ${result.status}; skipping it`);
+      exhaustedProviders.add(candidate.provider.id);
     }
   }
   return null;
