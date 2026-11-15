@@ -782,6 +782,7 @@ async function serveRequest(
     seenProviders.add(candidate.provider.id);
     ordered.push(candidate);
   };
+  const planned = PLAN[manifestIndex];
   if (planned !== undefined) {
     const plannedCandidate = candidates.find(
       (c) => c.provider.id === planned.provider && c.model === planned.model,
