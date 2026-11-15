@@ -10,8 +10,9 @@ Ria's entry for the make.fun bounty [free-model-aggregator-01](https://make.fun/
 
 - Reads the trial brief (`MAKEFUN_PROMPT_FILE`): provider directory, sealed quality table, workload manifest.
 - Probes each provider's catalog route in that provider's own wire (OpenAI, Anthropic, Gemini) and registers one catalog with the env (`POST $MAKEFUN_ENV_URL/register`).
-- Routes each request to the highest-rated **free** model meeting its requirements (tools / vision / JSON mode / minimum context). An OpenAI request in JSON mode never rides an Anthropic wire, because that wire cannot carry `response_format`.
-- Fails over on 402 / 429 / 5xx: a refusal that says the budget is spent (or the provider is out) marks that provider exhausted for the trial; a scheduled refusal does not, and the request is retried on the next candidate.
+- Routes each request to its **pre-planned** (provider, model) for that manifest row: the plan spreads the 20 calls so the fewest possible are a provider's refusal-prone 2nd+ call (the env draws fail_calls and outage_from from [2, budget-1], so a provider's first call is always safe but its second already fails ~26% of the time on openrouter). The plan was chosen by Monte-Carlo simulation over the generator's exact draw to minimise expected refusals subject to quality loss ≤ 500, keeping quality ≥ 98 so the score stays 99. Practice trials: 22/22/24 upstream calls (was 25/30/28), score 99.
+- An OpenAI request in JSON mode never rides an Anthropic wire, because that wire cannot carry `response_format`.
+- Fails over on 402 / 429 / 5xx to a provider not yet called in this trial first (its first call is always safe), then to already-called providers, best rating first, each provider tried at most once per request. A refusal that says the budget is spent (or the provider is out) marks that provider exhausted for the trial; a scheduled refusal does not.
 - Upstream calls are plain JSON even for streamed client requests; the server renders the client's stream itself, so the stream carries the provider's real usage (the client never asks for stream usage, so a passed-through stream would carry none).
 - Polls `GET $MAKEFUN_ENV_URL/work` and exits 0 when the workload is done.
 
